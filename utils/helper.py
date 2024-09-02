@@ -1,12 +1,14 @@
-import torch
-import numpy as np
-import imageio.v2 as imageio
-from tqdm import tqdm
-from diffdrr.drr import DRR
-from torchvision.transforms import Resize
 from pathlib import Path
+
+import imageio.v2 as imageio
+import numpy as np
+import torch
 from torch.cuda.amp import custom_bwd, custom_fwd
+from torchvision.transforms import Resize
+from tqdm import tqdm
+
 from diffdrr.data import read
+from diffdrr.drr import DRR
 
 
 
@@ -62,6 +64,7 @@ def load(
     geometry_filename="scan_geom_corrected.geom",
     dark_filename="di000000.tif",
     flat_filenames=["io000000.tif", "io000001.tif"],
+    half_orbit=False,
 ):
     """Load and preprocess raw projection data."""
 
@@ -71,12 +74,18 @@ def load(
     # And create a numpy array to projection geometry
     vecs = np.zeros((0, 12), dtype=np.float32)
     # orbit = range(0, 1200, subsample)
-    orbit = np.linspace(0, 600, n_views, endpoint=False, dtype=int)
+    if half_orbit:
+        orbit = np.linspace(0, 600, n_views, endpoint=False, dtype=int)
+    else:
+        orbit = np.linspace(0, 1200, n_views, endpoint=False, dtype=int)
     n_projs_orbit = len(orbit)
 
     # Projection file indices, reversed due to portrait mode acquisition
     # projs_idx = range(1200, 0, -subsample)
-    projs_idx = np.linspace(1200, 600, n_views, endpoint=False, dtype=int)
+    if half_orbit:
+        projs_idx = np.linspace(1200, 600, n_views, endpoint=False, dtype=int)
+    else:
+        projs_idx = np.linspace(1200, 0, n_views, endpoint=False, dtype=int)
 
 
     # Read the images and geometry from each acquisition
@@ -229,10 +238,10 @@ class Reconstruction(torch.nn.Module):
         
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, walnut_id, tube=[2], downsample=1, poses=30, random_pick=False):
+    def __init__(self, walnut_id, tube=[2], downsample=1, poses=30, half_orbit=False):
         main_dir = Path(f'/data/vision/polina/scratch/walnut/data/Walnut{walnut_id}/')
         dir = Path(f'/data/vision/polina/scratch/walnut/data/Walnut{walnut_id}/Projections/')
-        self.gt_projs, vecs = load(dir, 972, 768, poses, orbits_to_recon=tube)
+        self.gt_projs, vecs = load(dir, 972, 768, poses, orbits_to_recon=tube, half_orbit=half_orbit)
         self.gt_projs = torch.tensor(self.gt_projs)
         self.sources, self.targets = get_source_target_vec(vecs)
         self.sources = torch.stack(self.sources)
@@ -309,3 +318,8 @@ class FastTensorDataLoader:
         self.source = self.source.pin_memory()
         self.target = self.target.pin_memory()
         self.pixels = self.pixels.pin_memory()
+
+
+
+def z_norm(x):
+    return (x - x.mean()) / x.std()
