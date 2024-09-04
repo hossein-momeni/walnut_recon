@@ -10,6 +10,7 @@ from tqdm import tqdm
 from diffdrr.data import read
 from diffdrr.drr import DRR
 
+from .construct_ground_truth import load as load_gt
 
 
 def get_source_target_vec(vecs: np.ndarray):
@@ -224,10 +225,11 @@ class Reconstruction(torch.nn.Module):
             **kwargs,
         )
 
+        img *= self.drr.affine(target - source).norm(dim=-1).unsqueeze(1)
         return img
     @property
     def density(self):
-        if self.density_regulator == None:
+        if self.density_regulator == 'None':
             return (self._density)
         elif self.density_regulator == 'clamp':
             return dclamp(self._density, 0, 1)
@@ -241,8 +243,11 @@ class Dataset(torch.utils.data.Dataset):
     def __init__(self, walnut_id, tube=[2], downsample=1, poses=30, half_orbit=False):
         main_dir = Path(f'/data/vision/polina/scratch/walnut/data/Walnut{walnut_id}/')
         dir = Path(f'/data/vision/polina/scratch/walnut/data/Walnut{walnut_id}/Projections/')
-        self.gt_projs, vecs = load(dir, 972, 768, poses, orbits_to_recon=tube, half_orbit=half_orbit)
-        self.gt_projs = torch.tensor(self.gt_projs)
+        
+        self.gt_projs, vecs = load_gt(dir, 972, 768, int(1200/poses), orbits_to_recon=tube)
+        # self.gt_projs, vecs = load(dir, 972, 768, poses, orbits_to_recon=tube)
+
+        self.gt_projs = torch.tensor(self.gt_projs).permute(1,0,2)
         self.sources, self.targets = get_source_target_vec(vecs)
         self.sources = torch.stack(self.sources)
         self.targets = torch.stack(self.targets)

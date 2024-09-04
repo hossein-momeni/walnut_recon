@@ -9,8 +9,8 @@ from torchmetrics.regression import PearsonCorrCoef
 from pathlib import Path
 
 
-from utils.helper import dclamp, get_source_target_vec, load, Reconstruction, Dataset, FastTensorDataLoader, TVLoss3D, z_norm
-        
+from utils.helper import dclamp, Reconstruction, Dataset, FastTensorDataLoader, TVLoss3D, z_norm
+
 
 normalize = lambda x: (x - x.min()) / (x.max() - x.min())
 def initialize(walnut_id, poses, downsample=1, batch_size=1_600_000, half_orbit=False):
@@ -55,7 +55,7 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
     mse_calc = torch.nn.MSELoss()
     # ncc_calc = LocalNormalizedCrossCorrelationLoss(spatial_dims=3)
 
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.1)
     losses = []
     tvs = []
     ssims = []
@@ -67,7 +67,7 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
             optimizer.zero_grad()
             est = recon(source.cuda(), target.cuda())
             tv_norm = tv_calc(recon.density[None, None])
-            loss = criterion(est, drr_scale * gt.cuda()) + tv_norm
+            loss = criterion(drr_scale * est, gt.cuda()) + tv_norm
             loss.backward()
             optimizer.step()
             pbar.set_description(f"loss : {loss.item():.06f} tv : {tv_norm.item():06f}")
@@ -103,11 +103,12 @@ def run(
         density_regulator='sigmoid',
         tv_type='vl1',
         drr_scale=1.0,
+        proj_name='dynamic_tv_scaled',
         **kwargs,
 ):
     drr_params['n_points'] = kwargs.get('n_points', 500)
     drr_params['renderer'] = kwargs.get('renderer', 'trilinear')
-    proj_name = 'dynamic_tv_scaled'
+    # proj_name = 'dynamic_tv_scaled'
     now_time = datetime.now().strftime("%m-%d__%H:%M")
     wandb.login() # replace your wandb key here!
     wandb.init(
@@ -203,6 +204,7 @@ if __name__ == "__main__":
     parser.add_argument("--tv_type", type=str, default='vl1')
     parser.add_argument("--half_orbit", type=bool, default=False)
     parser.add_argument("--drr_scale", type=float, default=1.0)
+    parser.add_argument("--proj_name", type=str, default='dynamic_tv_scaled')
     args = parser.parse_args()
     main(**vars(args))
     
