@@ -70,21 +70,21 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
             loss = criterion(drr_scale * est, gt.cuda()) + tv_norm
             loss.backward()
             optimizer.step()
-            pbar.set_description(f"loss : {loss.item():.06f} tv : {tv_norm.item():06f}")
             losses.append(loss.item())
             tvs.append(tv_norm.item())
+        pbar.set_description(f"loss : {loss.item():.06f} tv : {tv_norm.item():06f}")
         lr_scheduler.step()
-        ssim = ssim_calc(recon.density[None, None], subject_volume[None])
+        # ssim = ssim_calc(recon.density[None, None], subject_volume[None])
         psnr = psnr_calc(recon.density[None, None], subject_volume[None])
         pcc = pcc_calc(recon.density.flatten(), subject_volume.flatten())
         mse = mse_calc(recon.density[None, None], subject_volume[None])
         # ncc = ncc_calc(recon.density[None, None], subject_volume[None]).cpu()
-        ssims.append(ssim.item())
+        # ssims.append(ssim.item())
         psnrs.append(psnr.item())
         pccs.append(pcc.item())
         # nccs.append(ncc.item())
     
-        wandb.log({"loss": loss.item(), "tv_loss": tv_norm.item(), "ssim": ssim.item(), "psnr": psnr.item(), 'pcc': pcc.item(), 'vol_mse': mse})
+        wandb.log({"loss": loss.item(), "tv_loss": tv_norm.item(), "psnr": psnr.item(), 'pcc': pcc.item(), 'vol_mse': mse})
     return recon.density, losses, tvs, ssims, psnrs, pccs
     
 

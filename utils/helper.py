@@ -225,7 +225,7 @@ class Reconstruction(torch.nn.Module):
             **kwargs,
         )
 
-        img *= self.drr.affine(target - source).norm(dim=-1).unsqueeze(1)
+        img *= ((target - source) * self.drr.affine.matrix[0].diag()[:3]).norm(dim=-1).unsqueeze(1)
         return img
     @property
     def density(self):
