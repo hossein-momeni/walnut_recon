@@ -236,7 +236,7 @@ class Reconstruction(torch.nn.Module):
         elif self.density_regulator == 'clamp':
             return dclamp(self._density, 0, 1)
         elif self.density_regulator == 'softplus':
-            return torch.nn.Softplus(1000,5)(self._density)
+            return torch.nn.Softplus(10,200)(self._density)
         elif self.density_regulator == 'sigmoid':
             return torch.sigmoid(self._density - self.shift)
         
