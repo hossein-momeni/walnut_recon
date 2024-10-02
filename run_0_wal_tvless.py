@@ -13,7 +13,6 @@ from utils.helper import dclamp, Reconstruction, Dataset, FastTensorDataLoader, 
 
 
 normalize = lambda x: (x - x.min()) / (x.max() - x.min())
-
 def initialize(walnut_id, poses, downsample=1, batch_size=1_600_000, half_orbit=False):
     projections, sources, targets, subject = Dataset(walnut_id=walnut_id, downsample=downsample, poses=poses, half_orbit=half_orbit).get_data()
     return FastTensorDataLoader(sources, targets, projections, subject, batch_size=batch_size)
@@ -26,9 +25,7 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
     print(f"Using device: {device}")
 
     dataloader = initialize(walnut_id=walnut_id, poses=poses, downsample=downsample, batch_size=batch_size, half_orbit=half_orbit)
-    recon = Reconstruction(dataloader.subject, device, drr_params, shift, density_regulator)
-    tv_calc = TVLoss3D(lr_tv, tv_type)
- 
+    recon = Reconstruction(dataloader.subject, device, drr_params, shift, density_regulator) 
 
     optimizer = torch.optim.Adam(recon.parameters(), lr=lr)
     if loss_fn == "l1":
@@ -61,7 +58,6 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
     # lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
     # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=gamma)
     losses = []
-    tvs = []
     ssims = []
     psnrs = []
     pccs = []
@@ -71,16 +67,14 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
         for source, target, gt in dataloader:
             optimizer.zero_grad()
             est = recon(source.cuda(), target.cuda())
-            tv_norm = tv_calc(recon.density[None, None])
-            loss = criterion(drr_scale * est, gt.cuda()) + tv_norm
+            loss = criterion(drr_scale * est, gt.cuda())
             loss.backward()
             optimizer.step()
             losses.append(loss.item())
-            tvs.append(tv_norm.item())
         end_time = time.perf_counter()
         time_deltas.append(end_time - start_time)
-        pbar.set_description(f"loss : {loss.item():.06f} tv : {tv_norm.item():06f}")
-        # lr_scheduler.step()
+        pbar.set_description(f"loss : {loss.item():.06f}")
+        lr_scheduler.step()
         # ssim = ssim_calc(recon.density[None, None], subject_volume[None])
         psnr = psnr_calc(recon.density[None, None], subject_volume[None])
         pcc = pcc_calc(recon.density.flatten(), subject_volume.flatten())
@@ -90,8 +84,9 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
         psnrs.append(psnr.item())
         pccs.append(pcc.item())
     
-        wandb.log({"loss": loss.item(), "tv_loss": tv_norm.item(), "psnr": psnr.item(), 'pcc': pcc.item(), 'vol_mse': mse, 'lr_decay': lr_scheduler.get_last_lr()[0]})
+        wandb.log({"loss": loss.item(), "psnr": psnr.item(), 'pcc': pcc.item(), 'vol_mse': mse, 'lr_decay': lr_scheduler.get_last_lr()[0]})
     ssims.append(ssim_calc(recon.density[None, None], subject_volume[None]).item())
+    tvs = []
     return recon.density, losses, tvs, ssims, psnrs, pccs, time_deltas
     
 

@@ -132,6 +132,8 @@ class TVLoss3D(torch.nn.Module):
         self.norm = norm
 
     def forward(self, x):
+        if self.norm == 'None':
+            return 0
         batch_size = x.size()[0]
         d_x = x.size()[2]
         h_x = x.size()[3]
