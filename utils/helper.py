@@ -1,11 +1,11 @@
-from pathlib import Path
-
-import imageio.v2 as imageio
 import numpy as np
 import torch
 from torch.cuda.amp import custom_bwd, custom_fwd
-from torchvision.transforms import Resize
+from pathlib import Path
 from tqdm import tqdm
+import imageio.v2 as imageio
+from torchvision.transforms import Resize
+import torch.nn.functional as F
 
 from diffdrr.data import read
 from diffdrr.drr import DRR
@@ -13,7 +13,10 @@ from diffdrr.drr import DRR
 from .construct_ground_truth import load as load_gt
 
 
-def get_source_target_vec(vecs: np.ndarray):
+def get_source_target_vec(vecs: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Extracts the source and target vectors from the projection geometry.
+    """
     projs_rows = 972  # Image height
     projs_cols = 768  # Image width
 
@@ -48,7 +51,7 @@ def get_source_target_vec(vecs: np.ndarray):
     return sources, targets
 
 
-def trafo(image: np.ndarray):
+def trafo(image: np.ndarray) -> np.ndarray:
     """
     A transformation to apply to each image. Converts an image from the
     raw scanner output to the form described by the projection geometry.
@@ -57,10 +60,10 @@ def trafo(image: np.ndarray):
 
 
 def load(
-    datapath,
-    proj_rows,
-    proj_cols,
-    n_views,
+    datapath: Path,
+    proj_rows: int,
+    proj_cols: int,
+    n_views: int, # number of views per orbit
     orbits_to_recon=[1, 2, 3],
     geometry_filename="scan_geom_corrected.geom",
     dark_filename="di000000.tif",
@@ -74,7 +77,6 @@ def load(
 
     # And create a numpy array to projection geometry
     vecs = np.zeros((0, 12), dtype=np.float32)
-    # orbit = range(0, 1200, subsample)
     if half_orbit:
         orbit = np.linspace(0, 600, n_views, endpoint=False, dtype=int)
     else:
@@ -82,7 +84,6 @@ def load(
     n_projs_orbit = len(orbit)
 
     # Projection file indices, reversed due to portrait mode acquisition
-    # projs_idx = range(1200, 0, -subsample)
     if half_orbit:
         projs_idx = np.linspace(1200, 600, n_views, endpoint=False, dtype=int)
     else:
@@ -124,8 +125,10 @@ def load(
     return projs, vecs
 
 
-
 class TVLoss3D(torch.nn.Module):
+    """
+    Total variation loss for 3D data
+    """
     def __init__(self, TVLoss_weight=1, norm='l2'):
         super(TVLoss3D, self).__init__()
         self.TVLoss_weight = TVLoss_weight
@@ -163,20 +166,21 @@ class TVLoss3D(torch.nn.Module):
             loss /= 3
             return self.TVLoss_weight * loss / batch_size
         
-        elif self.norm == 'vl1':
+        elif self.norm == 'vl1': # same as l1, but consistent with vivek's implementation
             delx = x.diff(dim=-3).abs().mean()
             dely = x.diff(dim=-2).abs().mean()
             delz = x.diff(dim=-1).abs().mean()
             return self.TVLoss_weight * (delx + dely + delz) / 3 
     
-
     def _tensor_size(self, t):
         return t.size()[1] * t.size()[2] * t.size()[3] * t.size()[4] 
+
 
 class DifferentiableClamp(torch.autograd.Function):
     """
     In the forward pass this operation behaves like torch.clamp.
     But in the backward pass its gradient is 1 everywhere, as if instead of clamp one had used the identity function.
+    Adopted from https://discuss.pytorch.org/t/exluding-torch-clamp-from-backpropagation-as-tf-stop-gradient-in-tensorflow/52404/6
     """
 
     @staticmethod
@@ -189,6 +193,7 @@ class DifferentiableClamp(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output.clone(), None, None
 
+
 def dclamp(input, min, max):
     """
     Like torch.clamp, but with a constant 1-gradient.
@@ -198,8 +203,12 @@ def dclamp(input, min, max):
     """
     return DifferentiableClamp.apply(input, min, max)
 
+
 class Reconstruction(torch.nn.Module):
-    def __init__(self, subject, device, drr_params, shift=6, density_regulator=None):
+    """
+    Main reconstruction module
+    """
+    def __init__(self, subject, device, drr_params: dict, shift=6, density_regulator='sigmoid'):
         super().__init__()
         self.drr_params = drr_params
         self.density_regulator = density_regulator
@@ -216,8 +225,8 @@ class Reconstruction(torch.nn.Module):
         ).to(device)
 
     def forward(self, source, target, **kwargs):
-        source = self.drr.affine_inverse(source)
-        target = self.drr.affine_inverse(target)
+        # source = self.drr.affine_inverse(source)
+        # target = self.drr.affine_inverse(target)
         if self.drr_params['renderer'] == 'trilinear':
             kwargs['n_points'] = self.drr_params['n_points']
         img = self.drr.renderer(
@@ -227,7 +236,7 @@ class Reconstruction(torch.nn.Module):
             **kwargs,
         )
 
-        img *= ((target - source) * self.drr.affine.matrix[0].diag()[:3]).norm(dim=-1).unsqueeze(1)
+        # img *= ((target - source) * self.drr.affine.matrix[0].diag()[:3]).norm(dim=-1).unsqueeze(1)
         return img
     @property
     def density(self):
@@ -247,7 +256,7 @@ class Dataset(torch.utils.data.Dataset):
         dir = Path(f'/data/vision/polina/scratch/walnut/data/Walnut{walnut_id}/Projections/')
         
         self.gt_projs, vecs = load_gt(dir, 972, 768, int(1200/poses), orbits_to_recon=tube)
-        # self.gt_projs, vecs = load(dir, 972, 768, poses, orbits_to_recon=tube)
+        # self.gt_projs, vecs = load(dir, 972, 768, poses, orbits_to_recon=tube, half_orbit=half_orbit)
 
         self.gt_projs = torch.tensor(self.gt_projs).permute(1,0,2)
         self.sources, self.targets = get_source_target_vec(vecs)
@@ -261,10 +270,7 @@ class Dataset(torch.utils.data.Dataset):
             self.gt_projs = resizer(self.gt_projs)
             self.sources = resizer(self.sources.permute(0,3,1,2)).permute(0,2,3,1)
             self.targets = resizer(self.targets.permute(0,3,1,2)).permute(0,2,3,1)
-        
-        # self.sources = self.sources.reshape(poses, -1, 3)
-        # self.targets = self.targets.reshape(poses, -1, 3)
-        # self.gt_projs = self.gt_projs.reshape(poses, 1, -1)
+
 
         self.sources = self.sources.reshape(1, -1, 3)
         self.targets = self.targets.reshape(1, -1, 3)
@@ -292,7 +298,7 @@ class FastTensorDataLoader:
         self.target = target
         self.pixels = pixels
         if pin_memory:
-            self.pin_memory()
+            self.pin_memory() # for faster data transfer to GPU, set to false for better memory management
 
         self.batch_size = batch_size if batch_size is not None else self.__len__()
         self.shuffle = shuffle if batch_size is not None else False
