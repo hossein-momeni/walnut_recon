@@ -236,18 +236,20 @@ class Reconstruction(torch.nn.Module):
             self.density_regulator = lambda x: torch.sigmoid(x - shift)
 
     def forward(self, source, target, **kwargs):
-        # source = self.drr.affine_inverse(source)
-        # target = self.drr.affine_inverse(target)
+        img = (target - source).norm(dim=-1).unsqueeze(1)
+        source = self.drr.affine_inverse(source)
+        target = self.drr.affine_inverse(target)
         if self.drr_params['renderer'] == 'trilinear':
             kwargs['n_points'] = self.drr_params['n_points']
         img = self.drr.renderer(
             self.density,
             source,
             target,
+            img,
             **kwargs,
         )
 
-        img *= ((target - source) * self.drr.affine.matrix[0].diag()[:3]).norm(dim=-1).unsqueeze(1)
+        # img *= ((target - source) * self.drr.affine.matrix[0].diag()[:3]).norm(dim=-1).unsqueeze(1)
         return img
     
     @property

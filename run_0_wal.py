@@ -32,7 +32,8 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
 
     dataloader = initialize(walnut_id=walnut_id, poses=poses, downsample=downsample, batch_size=batch_size, half_orbit=half_orbit)
     recon = Reconstruction(dataloader.subject, device, drr_params, shift, density_regulator)
-    dataloader.apply_function(recon.drr.affine_inverse)
+    # instead of applying the affine transformation to each batch do it all at once
+    # dataloader.apply_function(recon.drr.affine_inverse)
     tv_calc = TVLoss3D(lr_tv, tv_type)
  
 
