@@ -78,16 +78,19 @@ def load(
     # And create a numpy array to projection geometry
     vecs = np.zeros((0, 12), dtype=np.float32)
     if half_orbit:
-        orbit = np.linspace(0, 600, n_views, endpoint=False, dtype=int)
+        orbit = np.linspace(0, 600 - 1, n_views, endpoint=False, dtype=int)
     else:
-        orbit = np.linspace(0, 1200, n_views, endpoint=False, dtype=int)
+        orbit = np.linspace(0, 1200 - 1, n_views, endpoint=False, dtype=int)
     n_projs_orbit = len(orbit)
 
     # Projection file indices, reversed due to portrait mode acquisition
-    if half_orbit:
-        projs_idx = np.linspace(1200, 600, n_views, endpoint=False, dtype=int)
-    else:
-        projs_idx = np.linspace(1200, 0, n_views, endpoint=False, dtype=int)
+    # projs_idx = range(1200, 0, -subsample) # this is the original method
+    # if half_orbit:
+    #     projs_idx = np.linspace(1200, 600, n_views, endpoint=False, dtype=int)
+    # else:
+    #     projs_idx = np.linspace(1200, 0, n_views, endpoint=False, dtype=int)
+
+    
 
 
     # Read the images and geometry from each acquisition
@@ -96,6 +99,7 @@ def load(
         # Load the scan geometry
         orbit_datapath = datapath / f"tubeV{orbit_id}"
         vecs_orbit = np.loadtxt(orbit_datapath / f"{geometry_filename}")
+        vecs_orbit = np.flip(vecs_orbit, axis=0)
         vecs = np.concatenate((vecs, vecs_orbit[orbit]), axis=0)
 
         # Load flat-field and dark-fields
@@ -107,7 +111,7 @@ def load(
 
         # Load projection data directly on the big projection array
         projs_orbit = np.zeros((n_projs_orbit, proj_rows, proj_cols), dtype=np.float32)
-        for idx, fn in enumerate(tqdm(projs_idx, desc=f"Loading images (tube {orbit_id})")):
+        for idx, fn in enumerate(tqdm(orbit, desc=f"Loading images (tube {orbit_id})")):
             projs_orbit[idx] = trafo(
                 imageio.imread(orbit_datapath / f"scan_{fn:06}.tif")
             )
@@ -211,9 +215,7 @@ class Reconstruction(torch.nn.Module):
     def __init__(self, subject, device, drr_params: dict, shift=6, density_regulator='sigmoid'):
         super().__init__()
         self.drr_params = drr_params
-        self.density_regulator = density_regulator
         self._density = torch.nn.Parameter(torch.zeros(*subject.volume.shape, device=device)[0])
-        self.shift = shift
         self.drr = DRR(
             subject,
             sdd=drr_params['sdd'],
@@ -223,6 +225,15 @@ class Reconstruction(torch.nn.Module):
             renderer=drr_params['renderer'],
             patch_size=drr_params['patch_size'],
         ).to(device)
+        
+        if density_regulator == 'None':
+            self.density_regulator = lambda x: x
+        elif density_regulator == 'clamp':
+            self.density_regulator = lambda x: dclamp(x, 0, 1)
+        elif density_regulator == 'softplus':
+            self.density_regulator = torch.nn.Softplus(10,200)
+        elif density_regulator == 'sigmoid':
+            self.density_regulator = lambda x: torch.sigmoid(x - shift)
 
     def forward(self, source, target, **kwargs):
         # source = self.drr.affine_inverse(source)
@@ -236,18 +247,12 @@ class Reconstruction(torch.nn.Module):
             **kwargs,
         )
 
-        # img *= ((target - source) * self.drr.affine.matrix[0].diag()[:3]).norm(dim=-1).unsqueeze(1)
+        img *= ((target - source) * self.drr.affine.matrix[0].diag()[:3]).norm(dim=-1).unsqueeze(1)
         return img
+    
     @property
     def density(self):
-        if self.density_regulator == 'None':
-            return (self._density)
-        elif self.density_regulator == 'clamp':
-            return dclamp(self._density, 0, 1)
-        elif self.density_regulator == 'softplus':
-            return torch.nn.Softplus(10,200)(self._density)
-        elif self.density_regulator == 'sigmoid':
-            return torch.sigmoid(self._density - self.shift)
+        return self.density_regulator(self._density)
         
 
 class Dataset(torch.utils.data.Dataset):
@@ -255,10 +260,10 @@ class Dataset(torch.utils.data.Dataset):
         main_dir = Path(f'/data/vision/polina/scratch/walnut/data/Walnut{walnut_id}/')
         dir = Path(f'/data/vision/polina/scratch/walnut/data/Walnut{walnut_id}/Projections/')
         
-        self.gt_projs, vecs = load_gt(dir, 972, 768, int(1200/poses), orbits_to_recon=tube)
-        # self.gt_projs, vecs = load(dir, 972, 768, poses, orbits_to_recon=tube, half_orbit=half_orbit)
+        # self.gt_projs, vecs = load_gt(dir, 972, 768, int(1200/poses), orbits_to_recon=tube)
+        self.gt_projs, vecs = load(dir, 972, 768, poses, orbits_to_recon=tube, half_orbit=half_orbit)
 
-        self.gt_projs = torch.tensor(self.gt_projs).permute(1,0,2)
+        self.gt_projs = torch.tensor(self.gt_projs)#.permute(1,0,2)
         self.sources, self.targets = get_source_target_vec(vecs)
         self.sources = torch.stack(self.sources)
         self.targets = torch.stack(self.targets)
@@ -305,10 +310,18 @@ class FastTensorDataLoader:
 
         self.n_batches, remainder = divmod(self.__len__(), self.batch_size)
         self.n_batches += 1 if remainder > 0 else 0
+        # if False: # masking the images (not working yet)
+        #     threshold = 1e-2
+        #     valid_idx = torch.nonzero(pixels.flatten() > threshold, as_tuple=True)
+        #     self.source = self.source[:, valid_idx[0]]
+        #     self.target = self.target[:, valid_idx[0]]
+        #     self.pixels = self.pixels[..., valid_idx[0]]
+
+
 
     def __iter__(self):
         if self.shuffle:
-            indices = torch.randperm(self.__len__())
+            indices = torch.randperm(self.__len__(), dtype=torch.int32, device='cuda').cpu()
             self.source = self.source[:, indices]
             self.target = self.target[:, indices]
             self.pixels = self.pixels[..., indices]
@@ -332,6 +345,12 @@ class FastTensorDataLoader:
         self.target = self.target.pin_memory()
         self.pixels = self.pixels.pin_memory()
 
+    def apply_function(self, func, device='cuda'):
+        idx = 0
+        while idx < self.__len__():
+            self.source[:, idx : idx + self.batch_size] = func(self.source[:, idx : idx + self.batch_size].to(device)).cpu()
+            self.target[:, idx : idx + self.batch_size] = func(self.target[:, idx : idx + self.batch_size].to(device)).cpu()
+            idx += self.batch_size
 
 
 def z_norm(x):

@@ -17,7 +17,7 @@ normalize = lambda x: (x - x.min()) / (x.max() - x.min())
 def initialize(walnut_id, poses, downsample, batch_size, half_orbit)-> FastTensorDataLoader:
     """get the data from dataset and initialize the dataloader"""
     projections, sources, targets, subject = Dataset(walnut_id=walnut_id, downsample=downsample, poses=poses, half_orbit=half_orbit).get_data()
-    print(f"Data loaded, using {len(projections)} projections")
+    print(f"Data loaded, using {poses} projections")
     return FastTensorDataLoader(sources, targets, projections, subject, batch_size=batch_size)
 
 
@@ -32,6 +32,7 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
 
     dataloader = initialize(walnut_id=walnut_id, poses=poses, downsample=downsample, batch_size=batch_size, half_orbit=half_orbit)
     recon = Reconstruction(dataloader.subject, device, drr_params, shift, density_regulator)
+    dataloader.apply_function(recon.drr.affine_inverse)
     tv_calc = TVLoss3D(lr_tv, tv_type)
  
 
@@ -50,7 +51,7 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
         raise ValueError(f"Unrecognized loss function : {loss_fn}")
     
     
-    subject_volume = dataloader.subject.volume.data.cuda()
+    subject_volume = dataloader.subject.volume.data.cuda().requires_grad_(False)
 
     max_val = (subject_volume).max()
     ssim_calc = SSIMMetric(3, max_val)
@@ -84,17 +85,19 @@ def optimize(walnut_id, poses, downsample, batch_size, n_itr, lr, lr_tv, shift, 
         time_deltas.append(end_time - start_time)
         pbar.set_description(f"loss : {loss.item():.06f} tv : {tv_norm.item():06f}")
         lr_scheduler.step()
-        # ssim = ssim_calc(recon.density[None, None], subject_volume[None]) # expensive to calculate
-        psnr = psnr_calc(recon.density[None, None], subject_volume[None])
-        pcc = pcc_calc(recon.density.flatten(), subject_volume.flatten())
-        mse = mse_calc(recon.density[None, None], subject_volume[None])
-        # ncc = ncc_calc(recon.density[None, None], subject_volume[None]).cpu()
-        # ssims.append(ssim.item())
-        psnrs.append(psnr.item())
-        pccs.append(pcc.item())
+        with torch.no_grad():
+            # ssim = ssim_calc(recon.density[None, None], subject_volume[None]) # expensive to calculate
+            psnr = psnr_calc(recon.density[None, None], subject_volume[None])
+            pcc = pcc_calc(recon.density.flatten(), subject_volume.flatten())
+            mse = mse_calc(recon.density[None, None], subject_volume[None])
+            # ncc = ncc_calc(recon.density[None, None], subject_volume[None]).cpu()
+            # ssims.append(ssim.item())
+            psnrs.append(psnr.item())
+            pccs.append(pcc.item())
     
         wandb.log({"loss": loss.item(), "tv_loss": tv_norm.item(), "psnr": psnr.item(), 'pcc': pcc.item(), 'vol_mse': mse, 'lr_decay': lr_scheduler.get_last_lr()[0]})
-    ssims.append(ssim_calc(recon.density[None, None], subject_volume[None]).item())
+    with torch.no_grad():
+        ssims.append(ssim_calc(recon.density[None, None], subject_volume[None]).item())
     return recon.density, losses, tvs, ssims, psnrs, pccs, time_deltas
     
 
@@ -104,7 +107,7 @@ def run(
         downsample: int | float = 1, # downsample factor
         batch_size:int = 2_000_000, # batch size (number of rays to process at once)
         half_orbit: bool =False, # use half orbit or full orbit
-        n_itr: int = 100, # optimization iterations
+        n_itr: int = 50, # optimization iterations
         lr: float = 1e-1, # optimizer learning rate
         lr_tv: float = 1e2, # tv loss coefficient
         shift: float = 5.0, # shif value for sigmoid
