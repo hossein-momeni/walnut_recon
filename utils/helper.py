@@ -212,10 +212,14 @@ class Reconstruction(torch.nn.Module):
     """
     Main reconstruction module
     """
-    def __init__(self, subject, device, drr_params: dict, shift=6, density_regulator='sigmoid'):
+    def __init__(self, subject, device, initialize_vol, drr_params: dict, shift=6, density_regulator='sigmoid'):
         super().__init__()
         self.drr_params = drr_params
-        self._density = torch.nn.Parameter(torch.zeros(*subject.volume.shape, device=device)[0])
+        if initialize_vol is None:
+            self._density = torch.nn.Parameter(torch.zeros(*subject.volume.shape, device=device)[0])
+        else:
+            self._density = torch.nn.Parameter(torch.tensor(initialize_vol, device=device))
+            
         self.drr = DRR(
             subject,
             sdd=drr_params['sdd'],
@@ -231,7 +235,8 @@ class Reconstruction(torch.nn.Module):
         elif density_regulator == 'clamp':
             self.density_regulator = lambda x: dclamp(x, 0, 1)
         elif density_regulator == 'softplus':
-            self.density_regulator = torch.nn.Softplus(10,200)
+            # shape of the graph for shift=10: https://www.desmos.com/calculator/xc0pnsqdrr
+            self.density_regulator = torch.nn.Softplus(shift, 40)
         elif density_regulator == 'sigmoid':
             self.density_regulator = lambda x: torch.sigmoid(x - shift)
 
@@ -321,21 +326,44 @@ class FastTensorDataLoader:
 
 
 
+    # def __iter__(self):
+    #     if self.shuffle:
+    #         with torch.no_grad():
+    #             indices = torch.randperm(self.__len__(), dtype=torch.int32, device='cuda').cpu()
+    #             self.source = self.source[:, indices]
+    #             self.target = self.target[:, indices]
+    #             self.pixels = self.pixels[..., indices]
+    #     self.idx = 0
+    #     return self
+
+    # def __next__(self):
+    #     if self.idx >= self.__len__():
+    #         raise StopIteration
+    #     source = self.source[:, self.idx : self.idx + self.batch_size]
+    #     target = self.target[:, self.idx : self.idx + self.batch_size]
+    #     pixels = self.pixels[..., self.idx : self.idx + self.batch_size]
+    #     self.idx += self.batch_size
+    #     return source, target, pixels
+
     def __iter__(self):
-        if self.shuffle:
-            indices = torch.randperm(self.__len__(), dtype=torch.int32, device='cuda').cpu()
-            self.source = self.source[:, indices]
-            self.target = self.target[:, indices]
-            self.pixels = self.pixels[..., indices]
         self.idx = 0
         return self
 
     def __next__(self):
         if self.idx >= self.__len__():
             raise StopIteration
-        source = self.source[:, self.idx : self.idx + self.batch_size]
-        target = self.target[:, self.idx : self.idx + self.batch_size]
-        pixels = self.pixels[..., self.idx : self.idx + self.batch_size]
+
+        # Sample random indices of size batch_size
+        if self.shuffle:
+            batch_indices = torch.randint(0, self.__len__(), (self.batch_size,), dtype=torch.int32, device='cuda')
+        else:
+            batch_indices = torch.arange(self.idx, self.idx + self.batch_size, dtype=torch.int32, device='cpu')
+
+        # Index into source, target, and pixels using the batch indices
+        source = self.source[:, batch_indices.to(self.source.device)]
+        target = self.target[:, batch_indices.to(self.target.device)]
+        pixels = self.pixels[..., batch_indices.to(self.pixels.device)]
+        
         self.idx += self.batch_size
         return source, target, pixels
 
